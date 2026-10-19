@@ -4,6 +4,7 @@ import logging
 import shutil
 import sqlite3
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from .config import BACKUPS_TO_KEEP, data_dir
@@ -31,6 +32,17 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def to_db(value):
+    """Python value → SQLite value. Decimals are stored as fixed-point text (never "1E+3")."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, Decimal):
+        return f"{value:f}"
+    if hasattr(value, "isoformat"):  # datetime / date
+        return value.isoformat()
+    return value
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Apply numbered .sql files above the database's user_version, in order."""
     current = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -47,7 +59,7 @@ def backup(conn: sqlite3.Connection, extra_dir: str | None = None) -> Path:
     """Copy the database to data/backups (keeping the newest N), plus an optional extra folder."""
     backups = data_dir() / "backups"
     backups.mkdir(parents=True, exist_ok=True)
-    target = backups / f"forex-{datetime.now():%Y%m%d-%H%M%S}.db"
+    target = backups / f"forex-{datetime.now():%Y%m%d-%H%M%S-%f}.db"  # µs: never collides
     with sqlite3.connect(target) as dest:
         conn.backup(dest)
     dest.close()

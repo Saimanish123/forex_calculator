@@ -12,7 +12,8 @@ from ..config import IST
 from . import parsers
 from .parsers import BankQuote, Bar
 
-YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/INR=X"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+YAHOO_URL = f"{YAHOO_CHART_URL}/INR=X"
 FRANKFURTER_URL = "https://api.frankfurter.dev/v1/{day}"
 OPEN_ER_URL = "https://open.er-api.com/v6/latest/USD"
 SBI_CSV_PATH = "csv_files/SBI_REFERENCE_RATES_USD.csv"
@@ -48,6 +49,15 @@ class RateSources:
     def yahoo_bars(self, interval: str, start: int, end: int) -> list[Bar]:
         payload = self._get(YAHOO_URL, interval=interval, period1=start, period2=end).json()
         return parsers.parse_yahoo_chart(payload)
+
+    def stock_price(self, ticker: str) -> tuple[Decimal, datetime]:
+        response = self.client.get(
+            f"{YAHOO_CHART_URL}/{ticker}", params={"range": "1d", "interval": "1d"}
+        )
+        if response.status_code == 404:
+            raise LookupError(f"Yahoo has no data for {ticker}")
+        response.raise_for_status()
+        return parsers.parse_yahoo_price(response.json())
 
     def frankfurter_daily(self, day: date) -> tuple[date, Decimal]:
         url = FRANKFURTER_URL.format(day=day.isoformat())

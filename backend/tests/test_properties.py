@@ -142,3 +142,162 @@ def test_gst_is_continuous_at_slab_edges():
     step = Decimal("0.01")
     for edge in (Decimal(100000), Decimal(1000000)):
         assert abs(conversion_gst(edge + step) - conversion_gst(edge)) < Decimal("0.001")
+
+
+# ---- conservation of money across whole random ledgers ----------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from forex_ledger.calc.fees import FeeRule  # noqa: E402
+from forex_ledger.calc.portfolio import Event, replay  # noqa: E402
+from forex_ledger.calc.scenario import sell_everything  # noqa: E402
+
+TOLERANCE = Decimal("1e-12")  # pro-rata splits divide at 28 significant digits
+money = st.decimals(min_value=Decimal("1.00"), max_value=Decimal("5000.00"), places=2)
+fx = st.decimals(min_value=Decimal("70.0000"), max_value=Decimal("110.0000"), places=4)
+share_price = st.decimals(min_value=Decimal("1.0000"), max_value=Decimal("900.0000"), places=4)
+fee = st.decimals(min_value=Decimal("0"), max_value=Decimal("5.00"), places=2)
+
+
+def realized_total(ledger) -> Decimal:
+    return (
+        sum((s.gain_inr for s in ledger.sales), Decimal(0))
+        + sum((d.income_inr for d in ledger.dividends), Decimal(0))
+        + sum((w.net_inr for w in ledger.withdrawals), Decimal(0))
+    )
+
+
+@st.composite
+def ledgers(draw):
+    """A random but possible ledger over two platforms (never sells shares it doesn't hold and
+    never withdraws more dollars than it has, so nothing is valued outside the books)."""
+    events, t, n = [], datetime(2025, 1, 1, 10, tzinfo=IST), 0
+    held = {}  # (platform, ticker) → qty
+    cash = {"a": Decimal(0), "b": Decimal(0)}
+    inr_in = inr_out = Decimal(0)
+    for _ in range(draw(st.integers(3, 30))):
+        t += timedelta(hours=draw(st.integers(1, 500)))
+        n += 1
+        platform = draw(st.sampled_from(["a", "b"]))
+        rate = draw(fx)
+        op = draw(st.sampled_from(["deposit", "deposit", "buy", "buy", "sell", "split",
+                                   "dividend", "withdrawal", "bonus", "writeoff"]))  # fmt: skip
+        if op == "deposit":
+            usd = draw(money)
+            cost = (usd * rate * draw(st.decimals(Decimal("1.000"), Decimal("1.030"), places=3))
+                    ).quantize(Decimal("0.01"))  # fmt: skip
+            events.append(Event("deposit", t, n, platform, rate, usd=usd, inr=cost))
+            cash[platform] += usd
+            inr_in += cost
+        elif op == "buy" and cash[platform] > 2:
+            ticker = draw(st.sampled_from(["AAA", "BBB"]))
+            price = draw(share_price)
+            fees = min(draw(fee), cash[platform] / 4).quantize(Decimal("0.01"))
+            qty = ((cash[platform] - fees) / price * draw(st.decimals(Decimal("0.1"), Decimal("1"),
+                   places=2))).quantize(Decimal("0.00000001"), rounding="ROUND_DOWN")  # fmt: skip
+            if qty <= 0:
+                continue
+            events.append(Event("buy", t, n, platform, rate, ticker=ticker, quantity=qty,
+                                price=price, fees=fees))  # fmt: skip
+            cash[platform] -= qty * price + fees
+            held[(platform, ticker)] = held.get((platform, ticker), Decimal(0)) + qty
+        elif op == "sell":
+            owned = [(k, q) for k, q in held.items() if k[0] == platform and q > 0]
+            if not owned:
+                continue
+            (p, ticker), qty_held = draw(st.sampled_from(owned))
+            qty = (qty_held * draw(st.decimals(Decimal("0.1"), Decimal("1"), places=2))
+                   ).quantize(Decimal("0.00000001"), rounding="ROUND_DOWN")  # fmt: skip
+            price = draw(share_price)
+            fees = min(draw(fee), qty * price / 4).quantize(Decimal("0.01"), rounding="ROUND_DOWN")
+            if qty <= 0:
+                continue
+            events.append(Event("sell", t, n, platform, rate, ticker=ticker, quantity=qty,
+                                price=price, fees=fees))  # fmt: skip
+            cash[platform] += qty * price - fees
+            held[(p, ticker)] -= qty
+        elif op == "split":
+            owned = [k for k, q in held.items() if k[0] == platform and q > 0]
+            if not owned:
+                continue
+            p, ticker = draw(st.sampled_from(owned))
+            ratio_to, ratio_from = draw(st.sampled_from([(2, 1), (10, 1), (3, 2), (1, 4)]))
+            events.append(Event("split", t, n, platform, ticker=ticker, split_from=ratio_from,
+                                split_to=ratio_to))  # fmt: skip
+            held[(p, ticker)] = held[(p, ticker)] * ratio_to / ratio_from
+        elif op in ("bonus", "writeoff"):
+            owned = [k for k, q in held.items() if k[0] == platform and q > 0]
+            if not owned:
+                continue
+            p, ticker = draw(st.sampled_from(owned))
+            qty = (held[(p, ticker)] * draw(st.decimals(Decimal("0.1"), Decimal("1"), places=2))
+                   ).quantize(Decimal("0.00000001"), rounding="ROUND_DOWN")  # fmt: skip
+            if qty <= 0:
+                continue
+            signed = qty if op == "bonus" else -qty
+            events.append(Event("adjustment", t, n, platform, rate, ticker=ticker,
+                                quantity=signed))  # fmt: skip
+            held[(p, ticker)] += signed
+        elif op == "dividend":
+            usd = draw(st.decimals(Decimal("0.01"), Decimal("50.00"), places=2))
+            events.append(Event("dividend", t, n, platform, rate, usd=usd, ticker="AAA",
+                                gross_usd=usd, withheld_usd=Decimal(0)))  # fmt: skip
+            cash[platform] += usd
+        elif op == "withdrawal" and cash[platform] >= 1:
+            usd = (cash[platform] * draw(st.decimals(Decimal("0.1"), Decimal("1"), places=2))
+                   ).quantize(Decimal("0.01"), rounding="ROUND_DOWN")  # fmt: skip
+            received = (usd * rate * draw(st.decimals(Decimal("0.970"), Decimal("1.000"),
+                        places=3))).quantize(Decimal("0.01"))  # fmt: skip
+            events.append(Event("withdrawal", t, n, platform, rate, usd=usd, inr=received))
+            cash[platform] -= usd
+            inr_out += received
+    prices = {t: draw(share_price) for t in ("AAA", "BBB")}
+    return events, inr_in, inr_out, prices, draw(fx), t
+
+
+@settings(max_examples=300)
+@given(case=ledgers())
+def test_realized_plus_exit_equals_money_out_minus_money_in(case):
+    events, inr_in, inr_out, prices, rate, last = case
+    ledger = replay(events)
+    assert ledger.uncovered == []
+
+    # Hypothetical: sell everything at `prices` and convert all dollars now, per platform.
+    exit_received = exit_net = Decimal(0)
+    for state in ledger.platforms.values():
+        e = sell_everything(state, prices, FeeRule(), rate, Decimal("0.7"), True)
+        parts = (e.stock_gain_inr - e.brokerage_inr + e.currency_inr - e.entry_costs_inr
+                 - e.exit_markup_inr - e.conversion_gst_inr)  # fmt: skip
+        assert abs(parts - e.net_inr) < TOLERANCE
+        exit_received += e.inr_received
+        exit_net += e.net_inr
+    assert abs(realized_total(ledger) + exit_net - (inr_out + exit_received - inr_in)) < TOLERANCE
+
+
+@settings(max_examples=300)
+@given(case=ledgers())
+def test_full_liquidation_realizes_exactly_money_out_minus_money_in(case):
+    events, inr_in, inr_out, prices, rate, last = case
+    ledger = replay(events)
+    # Actually sell every holding and withdraw every dollar, then compare with cash in vs out.
+    extra, n, t = [], 10_000, last
+    for platform, state in ledger.platforms.items():
+        for ticker, lots in state.lots.items():
+            qty = sum((lot.qty for lot in lots), Decimal(0))
+            if qty > 0:
+                n, t = n + 1, t + timedelta(minutes=1)
+                extra.append(Event("sell", t, n, platform, rate, ticker=ticker, quantity=qty,
+                                   price=prices[ticker]))  # fmt: skip
+    final = replay(events + extra)
+    for platform, state in final.platforms.items():
+        if state.pool.usd > 0 or state.pool.inr != 0:
+            n, t = n + 1, t + timedelta(minutes=1)
+            received = (state.pool.usd * rate).quantize(Decimal("0.01"))
+            extra.append(Event("withdrawal", t, n, platform, rate, usd=state.pool.usd,
+                               inr=received))  # fmt: skip
+            inr_out += received
+    final = replay(events + extra)
+    for state in final.platforms.values():
+        assert state.pool.usd == 0 and abs(state.pool.inr) < TOLERANCE
+        assert all(lot.qty == 0 for lots in state.lots.values() for lot in lots)
+    assert abs(realized_total(final) - (inr_out - inr_in)) < TOLERANCE

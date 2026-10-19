@@ -5,7 +5,7 @@ platforms supported). It records every INR↔USD conversion and every stock trad
 shows the **hidden costs** (forex markup, GST, brokerage), the **currency effect**, and
 the **true rupee profit** of any holding — including a "what if I sell now" calculator.
 
-Status: **phase 1 (forex core) built; phases 2–3 next.**
+Status: **all three phases built.**
 
 ---
 
@@ -92,7 +92,7 @@ entries on the same date are ordered by an optional time (deposits before buys b
 |---|---|
 | **Deposit** (INR→USD) | date + time, platform, ₹ debited from bank, $ credited, *of which* GST/charges ₹ (optional), *of which* TCS ₹ (optional), note |
 | **Withdrawal** (USD→INR) | date + time, platform, $ withdrawn, ₹ received in bank, *of which* GST/charges ₹ (optional), note |
-| **Dividend** | date, platform, ticker, gross $, US tax withheld $ (default 25%), net $ credited |
+| **Dividend** | date + time, platform, ticker, gross $, US tax withheld $ (default 25% — India–US treaty rate), net $ = gross − withheld |
 
 The app fetches the mid-market rate for the date (editable override) and stores it with the entry.
 
@@ -102,13 +102,18 @@ The app fetches the mid-market rate for the date (editable override) and stores 
 | **Buy** | date, platform, ticker, quantity (fractional ok), price/share $, brokerage $ + GST $ (auto-filled, editable), note |
 | **Sell** | same fields |
 | **Split** | date, platform, ticker, ratio (e.g. 10-for-1) — multiplies quantity and divides per-share cost of all open lots; total cost unchanged |
-| **Adjustment** | date, platform, ticker, quantity change and/or cost change, note — for mergers, spin-offs and other rare corporate actions |
+| **Adjustment** | two modes for rare corporate actions: **shares added/removed** (signed quantity; + = received at zero cost, e.g. bonus shares; − = written off with no proceeds, e.g. delisting) or **moved to another ticker** (new ticker, shares received, % of cost moved, and whether the old shares stop existing — merger / symbol change = 100% and cancelled; spin-off = part of the cost, old shares kept). Moved lots keep their acquisition dates. |
 
 Sells consume holdings **FIFO** (oldest shares first — same as Indian tax practice, matters
-for the 24-month long-term rule).
+for the 24-month long-term rule). Every create/edit/delete replays the whole ledger inside the
+same database transaction and is rejected (rolled back) if any sell would exceed the shares held
+at that time — so editing or deleting an earlier buy can never leave an impossible ledger. The
+trade form shows exact totals and the realized result before saving, by applying the trade in a
+transaction that is always rolled back (`POST /api/stock-trades/preview`).
 
-### 4.3 Portfolio snapshot (optional)
-Current price per ticker, entered by you, used by the dashboard's "if I sold everything today".
+### 4.3 Current prices
+Latest price per ticker — typed in, or fetched from Yahoo's chart API (US-dollar listings only) —
+used by the calculator and the dashboard's "if I sold everything today".
 
 ---
 
@@ -120,8 +125,10 @@ Current price per ticker, entered by you, used by the dashboard's "if I sold eve
 | Mid-market — today (fallback) | open.er-api.com | latest, hourly | free, no key |
 | Mid-market — past dates (fallback) | Frankfurter (ECB-based) | back to 1999 | daily fix ~16:00 CET; weekends/holidays → previous business day |
 | SBI TT buy/sell | `sahilgupta/sbi-fx-ratekeeper` CSV on GitHub | back to 2020 | community archive, occasional gaps; also used for tax (Rule 115) |
-| ICICI card rates | ICICI forex card-rate web page | today only | app saves a snapshot daily → builds its own history from first run |
-| HDFC / any other bank | typed in | — | HDFC's daily PDF URL isn't stable; manual entry |
+| ICICI card rates | ICICI forex card-rate web page | current sheet only | snapshots saved → history builds up from first run |
+| HDFC card rates | HDFC treasury forex card-rate PDF (stable URL on hdfc.bank.in) | current sheet only | same snapshot approach |
+| Other banks | typed in | — | one adapter file per bank can be added later |
+| Share prices | Yahoo chart API | latest | optional; typed-in prices work the same |
 
 Every forex entry has a **date and time (IST)** — the moment the rate was locked (INDmoney's
 confirm time). A "Now" button fills the current time. The benchmark is the 1-minute bar
@@ -171,6 +178,15 @@ basis (₹ at mid-market when acquired).
   **currency movement** `$w·m(d) − s·M` − **exit cost** `($w·m(d) − ₹w)` − **entry cost** `(s·C − s·M)`.
 - If a buy/withdrawal exceeds `B` (missing earlier entries), the shortfall is valued at `m(d)` with
   zero markup and the entry is flagged ⚠️.
+- Same-timestamp order: deposits, dividends, buys, splits/adjustments, sells, withdrawals.
+- Write-off (negative adjustment): shares removed with no proceeds. Unlike a sale — whose proceeds
+  carry the position's currency movement and entry costs back into the pool until withdrawn — a
+  write-off has no dollars to carry them, so it realizes everything at once: stock loss at
+  `m(d)`, currency movement and entry costs. Its total is exactly minus the lots' rupee cost.
+- Every trade stores the mid-market rate at its time (splits excepted) — sells need it to value
+  the realized gain, buys to value any dollars not covered by deposits.
+- **Invariants (property-tested over random ledgers):** realized + "if sold today" = everything
+  out − everything in; after selling and withdrawing everything, realized = ₹ out − ₹ in exactly.
 
 Check (example from discussion): buy $1,000 @ ₹97 (mkt 96), withdraw $1,000 @ ₹98 (mkt 99)
 → currency +₹3,000, entry cost −₹1,000, exit cost −₹1,000, **net +₹1,000**.
@@ -196,9 +212,15 @@ Also shows:
 - **Break-even sell price** at today's rate (solved numerically).
 - **"Keep dollars in wallet"** result: `N − H` in $ (no exit conversion).
 - **Fees as % of gross gain**: total costs ÷ (stock gain + currency movement).
-- **Tax estimate** (toggle): STCG at your slab rate (held ≤ 24 months) or LTCG 12.5% (> 24 months,
-  no ₹1.25L exemption), on the ₹ gain computed with SBI TT buying rates (last day of the month
-  before purchase / sale month — common practice under Rule 115). Labelled "estimate — confirm with CA".
+- **Tax estimate** (toggle): gain = sale value − sell expenses − cost (incl. buy fees), with **each
+  side converted separately** at SBI's TT buying rate on the last day of the month before that
+  side's transaction (Rule 115; Rule 206 under the Income-tax Act, 2025; if SBI published nothing
+  that day, the latest rate within 7 days). Per lot: held > 24 months → LTCG 12.5% (no indexation,
+  no ₹1.25L exemption), else STCG at the slab rate (Settings). Within the sale a short-term loss
+  offsets long-term gains, not the other way round. +4% cess; surcharge not modelled. Labelled
+  "estimate — confirm with your CA"; marked incomplete if an SBI rate is missing (archive: 2020+).
+- **Display rounding**: each rupee part is rounded to the paisa once and every total shown is
+  built from those rounded parts, so received − cost = net = Σ parts exactly on screen.
 
 Reference example (must be reproduced by tests): 10 shares bought @ $100, buy brokerage+GST
 $2.95, dollars cost ₹97 each (mkt 96); sell 10 @ $110 with mkt 98.50, exit markup 1%,
@@ -213,12 +235,20 @@ For each platform: the portfolio $ value at which converting everything today (a
 minus GST) returns the net ₹ still invested. Shown with how far current value is from it.
 
 ### 6.6 TCS tracker
-Per financial year (Apr–Mar), sum of deposits across all platforms vs ₹10 lakh threshold;
-TCS paid so far (claimable in ITR) and remaining headroom.
+Per financial year (Apr–Mar): rupees remitted (₹ converted on deposits, excluding charges and TCS)
+across all platforms vs the ₹10 lakh threshold; TCS paid (claimable in ITR) and remaining headroom.
+
+### 6.7 Data
+- Export: full JSON (settings, platforms, banks, manual bank rates, prices, entries, trades) and
+  CSVs of conversions and trades. Import replaces everything in one transaction, rejects files from
+  a newer schema or with an impossible ledger, and takes a backup first. "Delete all" (typed
+  confirmation) also backs up first. Sample data (fixed, offline rates) loads only into an empty
+  ledger.
+- Launchers: `Forex Ledger.command` (macOS) and `Forex Ledger.bat` (Windows) run `uv run forex`.
 
 ---
 
-### 6.7 Accuracy labels
+### 6.8 Accuracy labels
 Every figure in the UI is labelled **exact** or **≈ estimate**:
 - **Exact** (given correct entries): amounts paid/received, rate got, ₹ cost of holdings,
   realized ₹ P&L of completed round trips, brokerage / GST / TCS totals.
@@ -235,11 +265,12 @@ Every figure in the UI is labelled **exact** or **≈ estimate**:
 
 ## 7. Screens
 
-1. **Dashboard** — totals invested/withdrawn, holdings with ₹ cost, total hidden cost (by type &
-   platform), portfolio break-even, "if I sold everything today" breakdown, TCS tracker.
-2. **Forex ledger** — table of deposits/withdrawals/dividends with rate got, mid-market, markup ₹/%,
-   bank comparison; add/edit/delete form.
-3. **Stock ledger** — table of buys/sells; holdings view (per ticker: qty, avg $ price, ₹ cost, lots).
+1. **Dashboard** (home) — net invested, realized so far (stock / dividends / currency / costs),
+   hidden costs by type, "if I sold everything today" per platform with break-even, TCS tracker.
+2. **Conversions** — deposits, withdrawals and dividends with rate got, mid-market, markup ₹/%,
+   bank comparison; add/edit/delete drawer with live preview.
+3. **Stocks** — holdings (per ticker: shares, avg $ price, ₹ cost, ₹ per $, price, FIFO lots, cash)
+   and the trade ledger (buys, sells, splits, adjustments) with realized gains.
 4. **Sell calculator** — the breakdown in §6.3.
 5. **Rates** — today's mid-market, SBI, ICICI (+ typed-in banks) with markup vs mid-market.
 6. **Settings** — default platform, default bank, platforms & fee rules, default exit markup,
@@ -249,9 +280,10 @@ Every figure in the UI is labelled **exact** or **≈ estimate**:
 
 ## 8. Build phases
 
-1. **Forex core** — rate sources + cache, forex ledger, per-conversion cost, bank comparison, Rates screen.
-2. **Stocks** — stock ledger, dollar pools, FIFO lots, holdings, sell calculator, break-even.
-3. **Extras** — dividends, tax estimate, TCS tracker, dashboard, CSV/JSON export & import.
+1. **Forex core** ✅ — rate sources + cache, forex ledger, per-conversion cost, bank comparison, Rates screen.
+2. **Stocks** ✅ — stock ledger, dollar pools, FIFO lots, holdings, sell calculator, break-even.
+3. **Extras** ✅ — dividends, tax estimate, TCS tracker, dashboard, CSV/JSON export & import,
+   sample data, launchers.
 
 Each phase ships working and is tested against the worked examples above.
 

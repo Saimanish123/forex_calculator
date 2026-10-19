@@ -1,0 +1,41 @@
+/* data page styles — built on the tokens and components in app.css */
+
+/* Conversions: empty state with more than one action */
+.empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+
+/* Dividend drawer: net amount from the server, shown in the field grid but not editable */
+.dividend-net {
+  display: flex; align-items: center; height: 36px;
+  font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+/* Settings: links styled as buttons, grouped actions, inline confirmations */
+a.btn { text-decoration: none; }
+.data-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.check { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+.check > span { display: flex; flex-direction: column; gap: 2px; }
+.check .field-hint { font-weight: 400; }
+.check input { width: 16px; height: 16px; margin: 2px 0 0; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
+
+.confirm-panel {
+  margin-top: 4px; padding: 14px 16px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius); background: var(--bg-subtle);
+}
+.confirm-title { font-weight: 600; overflow-wrap: anywhere; }
+.confirm-panel p { margin: 8px 0 0; color: var(--text-muted); font-size: 13.5px; }
+.confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+.danger-card {
+  max-width: 560px; padding: 16px; border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--neg) 40%, var(--border));
+}
+.danger-confirm { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.danger-confirm .callout { margin-top: 8px; }
+.btn-danger-solid { background: var(--neg); border-color: var(--neg); color: var(--bg); }
+.btn-danger-solid:hover { background: var(--neg); opacity: 0.9; }
+.btn-danger-solid:disabled:hover { opacity: 0.5; }
+
+@media (max-width: 760px) {
+  .danger-row { flex-direction: column; align-items: stretch; }
+  .danger-row .btn { align-self: flex-start; }
+}

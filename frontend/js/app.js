@@ -5,19 +5,26 @@ import { Icon } from "./components/icons.js";
 import { Toaster } from "./components/ui.js";
 import { html } from "./html.js";
 import { MetaContext } from "./meta.js";
+import { CalculatorPage } from "./pages/calculator.js";
 import { ConversionsPage } from "./pages/conversions.js";
+import { DashboardPage } from "./pages/dashboard.js";
 import { RatesPage } from "./pages/rates.js";
 import { SettingsPage } from "./pages/settings.js";
+import { StocksPage } from "./pages/stocks.js";
 
 const ROUTES = {
+  dashboard: { label: "Dashboard", icon: "home", page: DashboardPage },
   conversions: { label: "Conversions", icon: "arrows", page: ConversionsPage },
+  stocks: { label: "Stocks", icon: "layers", page: StocksPage },
+  calculator: { label: "Sell calculator", icon: "calculator", page: CalculatorPage },
   rates: { label: "Rates", icon: "chart", page: RatesPage },
   settings: { label: "Settings", icon: "sliders", page: SettingsPage },
 };
 
+// Hash routes: "#/stocks" or "#/calculator?platform=indmoney&ticker=AAPL&quantity=5".
 function currentRoute() {
-  const name = location.hash.replace(/^#\/?/, "");
-  return ROUTES[name] ? name : "conversions";
+  const [name, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
+  return { name: ROUTES[name] ? name : "dashboard", params: Object.fromEntries(new URLSearchParams(query)) };
 }
 
 function App() {
@@ -35,10 +42,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    document.title = `${ROUTES[route].label} · Forex Ledger`;
-  }, [route]);
+    document.title = `${ROUTES[route.name].label} · Forex Ledger`;
+  }, [route.name]);
 
-  const Page = ROUTES[route].page;
+  const Page = ROUTES[route.name].page;
   return html`<${MetaContext.Provider} value=${meta && { ...meta, reload: reloadMeta }}>
     <div class="app">
       <nav class="sidebar" aria-label="Main">
@@ -48,13 +55,10 @@ function App() {
         </div>
         <div class="nav">
           ${Object.entries(ROUTES).map(
-            ([name, r]) => html`<a href=${`#/${name}`} class=${route === name ? "active" : ""}>
+            ([name, r]) => html`<a href=${`#/${name}`} class=${route.name === name ? "active" : ""}>
               <${Icon} name=${r.icon} />${r.label}
             </a>`,
           )}
-          <div class="nav-section">Coming next</div>
-          <a class="soon" aria-disabled="true"><${Icon} name="layers" />Stocks<span class="badge tag">Soon</span></a>
-          <a class="soon" aria-disabled="true"><${Icon} name="calculator" />Sell calculator<span class="badge tag">Soon</span></a>
         </div>
         <div class="sidebar-foot">
           Data stays on this computer.<br />Not financial or tax advice.
@@ -64,7 +68,7 @@ function App() {
         ${error
           ? html`<div class="page"><div class="callout error"><${Icon} name="alert" />Couldn't reach the app server: ${error}</div></div>`
           : meta
-            ? html`<${Page} />`
+            ? html`<${Page} params=${route.params} key=${route.name} />`
             : null}
       </main>
     </div>

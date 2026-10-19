@@ -9,16 +9,29 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import Body, Depends, FastAPI, Request
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, db, forex
+from . import __version__, db, forex, insights, ledger, stocks, transfer
+from .calc.fees import estimate_fees
 from .config import FRONTEND_DIR, IST
 from .money import HUNDRED, fmt
 from .rates.service import AUTO_SOURCES, RateService, RateUnavailable
 from .rates.sources import RateSources
-from .schemas import BankIn, BankRateIn, ForexEntryIn, PlatformIn, SettingsIn
+from .schemas import (
+    BankIn,
+    BankRateIn,
+    CalculatorIn,
+    DeleteAllIn,
+    FeeEstimateIn,
+    ForexEntryIn,
+    PlatformIn,
+    PriceIn,
+    SettingsIn,
+    TradeIn,
+)
+from .tickers import normalize_ticker
 
 PLATFORM_FIELDS = list(PlatformIn.model_fields)
 
@@ -100,6 +113,7 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
                 for row in conn.execute("SELECT * FROM banks ORDER BY sort_order, name")
             ],
             "database": str(db.db_path()),
+            "empty": transfer.is_empty(conn),
         }
 
     @app.put("/api/settings")
@@ -112,7 +126,7 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
         with conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                [(key, (value or "").strip() or None) for key, value in values.items()],
+                [(key, _setting_value(value)) for key, value in values.items()],
             )
         return _settings(conn)
 
@@ -163,7 +177,7 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
     @app.get("/api/rates/benchmark")
     def benchmark(at: datetime, rates: RateService = Depends(get_rates)):
         at = at if at.tzinfo else at.replace(tzinfo=IST)
-        return _benchmark_json(rates.benchmark(at))
+        return insights.benchmark_json(rates.benchmark(at))
 
     @app.get("/api/rates/today")
     def rates_today(
@@ -187,7 +201,7 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
                 }
             )
         return {
-            "mid": _benchmark_json(mid) if mid else None,
+            "mid": insights.benchmark_json(mid),
             "banks": banks,
             "platforms": _platform_history(conn),
         }
@@ -240,6 +254,123 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
     def delete_forex(entry_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         forex.delete(conn, entry_id)
 
+    # ---- stocks ---------------------------------------------------------------------------
+
+    @app.get("/api/stock-trades")
+    def list_trades(conn: sqlite3.Connection = Depends(get_conn)):
+        return {"trades": stocks.list_trades(conn)}
+
+    @app.post("/api/stock-trades/fees")
+    def fee_estimate(body: FeeEstimateIn, conn: sqlite3.Connection = Depends(get_conn)):
+        fees = estimate_fees(
+            ledger.fee_rule(conn, body.platform_id), body.side, body.quantity, body.price_usd
+        )
+        return {
+            "brokerage_usd": fmt(fees.brokerage_usd),
+            "brokerage_gst_usd": fmt(fees.brokerage_gst_usd),
+            "other_fees_usd": fmt(fees.other_fees_usd),
+            "total_usd": fmt(fees.total),
+        }
+
+    @app.post("/api/stock-trades/preview")
+    def preview_trade(
+        body: TradeIn,
+        trade_id: int | None = None,
+        conn: sqlite3.Connection = Depends(get_conn),
+        rates: RateService = Depends(get_rates),
+    ):
+        return stocks.preview(conn, rates, stocks.TradeInput(**body.model_dump()), trade_id)
+
+    @app.post("/api/stock-trades", status_code=201)
+    def create_trade(
+        body: TradeIn,
+        conn: sqlite3.Connection = Depends(get_conn),
+        rates: RateService = Depends(get_rates),
+    ):
+        return stocks.create(conn, rates, stocks.TradeInput(**body.model_dump()))
+
+    @app.put("/api/stock-trades/{trade_id}")
+    def update_trade(
+        trade_id: int,
+        body: TradeIn,
+        conn: sqlite3.Connection = Depends(get_conn),
+        rates: RateService = Depends(get_rates),
+    ):
+        return stocks.update(conn, rates, trade_id, stocks.TradeInput(**body.model_dump()))
+
+    @app.delete("/api/stock-trades/{trade_id}", status_code=204)
+    def delete_trade(trade_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        stocks.delete(conn, trade_id)
+
+    @app.get("/api/holdings")
+    def holdings(conn: sqlite3.Connection = Depends(get_conn)):
+        return {"platforms": insights.holdings(conn)}
+
+    @app.put("/api/prices/{ticker}")
+    def set_price(ticker: str, body: PriceIn, conn: sqlite3.Connection = Depends(get_conn)):
+        return _save_price(conn, normalize_ticker(ticker), body.price_usd, "manual")
+
+    @app.post("/api/prices/{ticker}/fetch")
+    def fetch_price(ticker: str, conn: sqlite3.Connection = Depends(get_conn)):
+        ticker = normalize_ticker(ticker)
+        try:
+            price, as_of = app.state.sources.stock_price(ticker)
+        except (LookupError, ValueError):
+            raise
+        except Exception as exc:
+            raise RateUnavailable(f"Couldn't fetch a price for {ticker} right now") from exc
+        return _save_price(conn, ticker, price, "auto", as_of)
+
+    @app.post("/api/calculator")
+    def calculator(
+        body: CalculatorIn,
+        conn: sqlite3.Connection = Depends(get_conn),
+        rates: RateService = Depends(get_rates),
+    ):
+        return insights.calculator(conn, rates, body)
+
+    @app.get("/api/dashboard")
+    def dashboard(
+        conn: sqlite3.Connection = Depends(get_conn), rates: RateService = Depends(get_rates)
+    ):
+        return insights.dashboard(conn, rates)
+
+    # ---- data ----------------------------------------------------------------------------
+
+    @app.get("/api/export")
+    def export(conn: sqlite3.Connection = Depends(get_conn)):
+        return JSONResponse(
+            transfer.export_data(conn),
+            headers=_download(f"forex-ledger-{datetime.now(IST):%Y%m%d}.json"),
+        )
+
+    @app.get("/api/export/{name}.csv")
+    def export_csv(name: str, conn: sqlite3.Connection = Depends(get_conn)):
+        writers = {"conversions": transfer.forex_csv, "trades": transfer.stocks_csv}
+        if name not in writers:
+            raise LookupError("Unknown export")
+        return Response(
+            writers[name](conn),
+            media_type="text/csv; charset=utf-8",
+            headers=_download(f"forex-ledger-{name}-{datetime.now(IST):%Y%m%d}.csv"),
+        )
+
+    @app.post("/api/import")
+    def import_(payload: dict = Body(...), conn: sqlite3.Connection = Depends(get_conn)):
+        backup = db.backup(conn, _settings(conn).get("backup_dir"))  # undo point
+        return {"imported": transfer.import_data(conn, payload), "backup": str(backup)}
+
+    @app.post("/api/sample-data", status_code=201)
+    def sample_data(conn: sqlite3.Connection = Depends(get_conn)):
+        transfer.load_sample(conn)
+        return {"ok": True}
+
+    @app.post("/api/delete-all")
+    def delete_all(body: DeleteAllIn, conn: sqlite3.Connection = Depends(get_conn)):
+        backup = db.backup(conn, _settings(conn).get("backup_dir"))  # undo point
+        transfer.delete_all(conn)
+        return {"backup": str(backup)}
+
     if FRONTEND_DIR.exists():
         app.mount("/", FrontendFiles(directory=FRONTEND_DIR, html=True), name="frontend")
     return app
@@ -247,6 +378,29 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
 
 def _forex_input(body: ForexEntryIn) -> forex.ForexInput:
     return forex.ForexInput(**body.model_dump())
+
+
+def _setting_value(value) -> str | None:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, Decimal):
+        return f"{value:f}"
+    return (value or "").strip() or None
+
+
+def _save_price(conn, ticker: str, price: Decimal, origin: str, as_of: datetime | None = None):
+    as_of = (as_of or datetime.now(IST)).isoformat()
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO ticker_prices (ticker, price_usd, as_of, origin) "
+            "VALUES (?, ?, ?, ?)",
+            (ticker, f"{price:f}", as_of, origin),
+        )
+    return {"ticker": ticker, "price_usd": fmt(price, 4), "as_of": as_of, "origin": origin}
+
+
+def _download(filename: str) -> dict:
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
 def _settings(conn: sqlite3.Connection) -> dict:
@@ -269,16 +423,6 @@ def _unique_id(conn: sqlite3.Connection, table: str, name: str) -> str:
 def _db_values(body: PlatformIn) -> list:
     values = body.model_dump()
     return [f"{v:f}" if isinstance(v, Decimal) else v for v in values.values()]
-
-
-def _benchmark_json(benchmark) -> dict:
-    return {
-        "rate": fmt(benchmark.rate, 4),
-        "source": benchmark.source,
-        "interval": benchmark.interval,
-        "bar_at": benchmark.bar_at.isoformat(),
-        "stale": benchmark.market_stale,
-    }
 
 
 def _bank_quote_json(quote, mid) -> dict | None:
@@ -304,7 +448,7 @@ def _bank_quote_json(quote, mid) -> dict | None:
 def _platform_history(conn: sqlite3.Connection) -> list[dict]:
     """Average markup you actually paid per platform, from your own ledger."""
     by_platform: dict[str, list[dict]] = {}
-    for entry in forex.list_entries(conn):
+    for entry in forex.list_entries(conn, forex.CONVERSION_KINDS):
         by_platform.setdefault(entry["platform_id"], []).append(entry)
     names = {row["id"]: row["name"] for row in conn.execute("SELECT id, name FROM platforms")}
     return [

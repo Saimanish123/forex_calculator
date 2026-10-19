@@ -50,6 +50,12 @@ class FakeSources:
             now.date(), now.replace(hour=0, minute=0), Decimal("94.6"), Decimal("97.4")
         )
 
+    def stock_price(self, ticker):
+        self._call("price")
+        if ticker == "NOPE":
+            raise LookupError("Yahoo has no data for NOPE")
+        return Decimal("123.4500"), datetime.now(IST).replace(microsecond=0)
+
     def hdfc_quote(self):
         self._call("hdfc")
         raise RuntimeError("HDFC down")
