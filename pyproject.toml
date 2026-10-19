@@ -9,16 +9,35 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "httpx>=0.27",
+    "pypdf>=5.0",
 ]
+
+[project.scripts]
+forex = "forex_ledger.cli:main"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.1",
     "pytest>=8.0",
     "ruff>=0.6",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/forex_ledger"]
+
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # FastAPI's Depends() in argument defaults
+
+[tool.ruff.lint.isort]
+known-first-party = ["forex_ledger"]
+
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["backend/tests"]
