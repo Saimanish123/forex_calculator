@@ -1,4 +1,4 @@
-"""Forex ledger: deposits and withdrawals with their benchmark / bank rates."""
+"""Forex ledger: deposits, withdrawals and dividends with their benchmark / bank rates."""
 
 import sqlite3
 from dataclasses import dataclass
@@ -7,10 +7,13 @@ from decimal import Decimal
 
 from .calc.conversions import ConversionAnalysis, analyze_conversion
 from .config import IST
+from .db import to_db
 from .money import HUNDRED, RATE_PLACES, ZERO, D, fmt, q
 from .rates.service import RateService
+from .tickers import normalize_ticker
 
 CONVERSION_KINDS = ("deposit", "withdrawal")
+KINDS = (*CONVERSION_KINDS, "dividend")
 
 
 @dataclass
@@ -18,38 +21,58 @@ class ForexInput:
     kind: str
     occurred_at: datetime
     platform_id: str
-    bank_id: str | None
-    inr_amount: Decimal
-    usd_amount: Decimal
+    bank_id: str | None = None
+    inr_amount: Decimal | None = None
+    usd_amount: Decimal | None = None
     charges_inr: Decimal = ZERO
     tcs_inr: Decimal = ZERO
     market_rate_override: Decimal | None = None
     bank_rate_override: Decimal | None = None
     note: str | None = None
+    ticker: str | None = None  # dividends
+    gross_usd: Decimal | None = None
+    withheld_usd: Decimal = ZERO
 
 
-def resolve_rates(rates: RateService, data: ForexInput) -> dict:
-    """Benchmark and bank comparison rate for an entry — the stored, fetched part of an entry."""
-    at = data.occurred_at.astimezone(IST)
-    if data.market_rate_override:
-        market = {
-            "market_rate": data.market_rate_override,
+def market_fields(rates: RateService, at: datetime, override: Decimal | None) -> dict:
+    """The mid-market benchmark stored with an entry or trade (or the user's own rate)."""
+    at = at.astimezone(IST)
+    if override:
+        return {
+            "market_rate": override,
             "market_source": "manual",
             "market_interval": None,
             "market_bar_at": at,
             "market_stale": False,
         }
-    else:
-        benchmark = rates.benchmark(at)
-        market = {
-            "market_rate": q(benchmark.rate, RATE_PLACES),
-            "market_source": benchmark.source,
-            "market_interval": benchmark.interval,
-            "market_bar_at": benchmark.bar_at,
-            "market_stale": benchmark.market_stale,
-        }
+    benchmark = rates.benchmark(at)
+    return {
+        "market_rate": q(benchmark.rate, RATE_PLACES),
+        "market_source": benchmark.source,
+        "market_interval": benchmark.interval,
+        "market_bar_at": benchmark.bar_at,
+        "market_stale": benchmark.market_stale,
+    }
+
+
+def market_json(entry: dict) -> dict:
+    return {
+        "rate": fmt(entry["market_rate"], RATE_PLACES),
+        "source": entry["market_source"],
+        "interval": entry["market_interval"],
+        "bar_at": entry["market_bar_at"].isoformat() if entry["market_bar_at"] else None,
+        "stale": bool(entry["market_stale"]),
+    }
+
+
+def resolve_rates(rates: RateService, data: ForexInput) -> dict:
+    """Benchmark and bank comparison rate for an entry — the stored, fetched part of an entry."""
+    at = data.occurred_at.astimezone(IST)
+    market = market_fields(rates, at, data.market_rate_override)
 
     bank = {"bank_rate": None, "bank_rate_date": None, "bank_rate_manual": False}
+    if data.kind not in CONVERSION_KINDS:
+        return market | bank
     if data.bank_rate_override:
         bank = {
             "bank_rate": data.bank_rate_override,
@@ -81,9 +104,18 @@ def analyze(entry: dict) -> ConversionAnalysis:
 
 
 def validate(data: ForexInput) -> None:
-    if data.kind not in CONVERSION_KINDS:
-        raise ValueError("Type must be deposit or withdrawal")
-    if data.inr_amount <= 0 or data.usd_amount <= 0:
+    if data.kind not in KINDS:
+        raise ValueError("Type must be deposit, withdrawal or dividend")
+    if data.kind == "dividend":
+        if not data.ticker:
+            raise ValueError("Enter the ticker that paid the dividend")
+        data.ticker = normalize_ticker(data.ticker)
+        if not data.gross_usd or data.gross_usd <= 0:
+            raise ValueError("Enter the dividend before tax")
+        if data.withheld_usd < 0 or data.withheld_usd >= data.gross_usd:
+            raise ValueError("US tax withheld must be less than the dividend")
+        return
+    if not data.inr_amount or not data.usd_amount or data.inr_amount <= 0 or data.usd_amount <= 0:
         raise ValueError("Amounts must be greater than zero")
     if data.charges_inr < 0 or data.tcs_inr < 0:
         raise ValueError("Charges and TCS can't be negative")
@@ -102,7 +134,7 @@ def create(conn: sqlite3.Connection, rates: RateService, data: ForexInput) -> di
     now = datetime.now(IST).isoformat()
     fields = _input_fields(data) | resolve_rates(rates, data)
     columns = list(fields) + ["created_at", "updated_at"]
-    values = [_to_db(fields[c]) for c in fields] + [now, now]
+    values = [to_db(fields[c]) for c in fields] + [now, now]
     with conn:
         cursor = conn.execute(
             f"INSERT INTO forex_entries ({', '.join(columns)}) "
@@ -120,7 +152,7 @@ def update(conn: sqlite3.Connection, rates: RateService, entry_id: int, data: Fo
     with conn:
         conn.execute(
             f"UPDATE forex_entries SET {', '.join(f'{c} = ?' for c in fields)} WHERE id = ?",
-            [_to_db(v) for v in fields.values()] + [entry_id],
+            [to_db(v) for v in fields.values()] + [entry_id],
         )
     return get(conn, entry_id)
 
@@ -140,6 +172,9 @@ def refresh_rates(conn: sqlite3.Connection, rates: RateService, entry_id: int) -
         market_rate_override=entry["market_rate"] if entry["market_source"] == "manual" else None,
         bank_rate_override=entry["bank_rate"] if entry["bank_rate_manual"] else None,
         note=entry["note"],
+        ticker=entry["ticker"],
+        gross_usd=entry["gross_usd"],
+        withheld_usd=entry["withheld_usd"] or ZERO,
     )
     return update(conn, rates, entry_id, data)
 
@@ -155,10 +190,11 @@ def get(conn: sqlite3.Connection, entry_id: int) -> dict:
     return serialize(_load(conn, entry_id))
 
 
-def list_entries(conn: sqlite3.Connection) -> list[dict]:
+def list_entries(conn: sqlite3.Connection, kinds: tuple[str, ...] = KINDS) -> list[dict]:
     rows = conn.execute(
-        "SELECT * FROM forex_entries WHERE kind IN ('deposit', 'withdrawal') "
-        "ORDER BY occurred_at DESC, id DESC"
+        f"SELECT * FROM forex_entries WHERE kind IN ({', '.join('?' * len(kinds))}) "
+        "ORDER BY occurred_at DESC, id DESC",
+        kinds,
     ).fetchall()
     return [_from_row(row) for row in rows]
 
@@ -179,7 +215,8 @@ def paise(result: ConversionAnalysis) -> dict:
 
 
 def summary(entries: list[dict]) -> dict:
-    """Totals over raw (unserialized) entries: sums of the per-conversion paise figures."""
+    """Conversion totals over raw (unserialized) entries: sums of the per-conversion paise
+    figures. Dividends are ignored here."""
     totals = {
         kind: {
             "count": 0,
@@ -194,6 +231,8 @@ def summary(entries: list[dict]) -> dict:
     tcs = vs_bank = ZERO
     compared = 0
     for entry in entries:
+        if entry["kind"] not in CONVERSION_KINDS:
+            continue
         money = paise(analyze(entry))
         bucket = totals[entry["kind"]]
         bucket["count"] += 1
@@ -232,50 +271,72 @@ def summary(entries: list[dict]) -> dict:
 
 
 def serialize(entry: dict) -> dict:
-    result = analyze(entry)
-    money = paise(result)
-    return {
+    base = {
         "id": entry["id"],
         "kind": entry["kind"],
         "occurred_at": entry["occurred_at"].isoformat(),
         "platform_id": entry["platform_id"],
+        "note": entry["note"],
+        "market": market_json(entry),
+    }
+    if entry["kind"] == "dividend":
+        rate = entry["market_rate"]
+        return base | {
+            "ticker": entry["ticker"],
+            "gross_usd": fmt(entry["gross_usd"]),
+            "withheld_usd": fmt(entry["withheld_usd"]),
+            "usd_amount": fmt(entry["usd_amount"]),
+            "income_inr": fmt(entry["usd_amount"] * rate),
+            "gross_inr": fmt(entry["gross_usd"] * rate),
+        }
+    result = analyze(entry)
+    money = paise(result)
+    return base | {
         "bank_id": entry["bank_id"],
         "inr_amount": fmt(entry["inr_amount"]),
         "usd_amount": fmt(entry["usd_amount"]),
         "charges_inr": fmt(entry["charges_inr"]),
         "tcs_inr": fmt(entry["tcs_inr"]),
-        "note": entry["note"],
-        "market": {
-            "rate": fmt(entry["market_rate"], 4),
-            "source": entry["market_source"],
-            "interval": entry["market_interval"],
-            "bar_at": entry["market_bar_at"].isoformat() if entry["market_bar_at"] else None,
-            "stale": bool(entry["market_stale"]),
-        },
         "bank": {
-            "rate": fmt(entry["bank_rate"], 4),
+            "rate": fmt(entry["bank_rate"], RATE_PLACES),
             "date": entry["bank_rate_date"].isoformat() if entry["bank_rate_date"] else None,
             "manual": bool(entry["bank_rate_manual"]),
         },
         "analysis": {
             **{key: fmt(value) for key, value in money.items()},
-            "rate_got": fmt(result.rate_got, 4),
+            "rate_got": fmt(result.rate_got, RATE_PLACES),
             "markup_pct": fmt(result.markup_pct, 3),
         },
     }
 
 
 def _input_fields(data: ForexInput) -> dict:
-    return {
+    fields = {
         "kind": data.kind,
         "occurred_at": data.occurred_at.astimezone(IST),
         "platform_id": data.platform_id,
+        "note": (data.note or "").strip() or None,
+    }
+    if data.kind == "dividend":
+        return fields | {
+            "bank_id": None,
+            "inr_amount": None,
+            "usd_amount": data.gross_usd - data.withheld_usd,
+            "charges_inr": ZERO,
+            "tcs_inr": ZERO,
+            "ticker": data.ticker,
+            "gross_usd": data.gross_usd,
+            "withheld_usd": data.withheld_usd,
+        }
+    return fields | {
         "bank_id": data.bank_id,
         "inr_amount": data.inr_amount,
         "usd_amount": data.usd_amount,
         "charges_inr": data.charges_inr,
         "tcs_inr": data.tcs_inr,
-        "note": (data.note or "").strip() or None,
+        "ticker": None,
+        "gross_usd": None,
+        "withheld_usd": None,
     }
 
 
@@ -286,9 +347,15 @@ def _load(conn: sqlite3.Connection, entry_id: int) -> dict:
     return _from_row(row)
 
 
+DECIMAL_COLUMNS = (
+    "inr_amount", "usd_amount", "charges_inr", "tcs_inr", "market_rate", "bank_rate",
+    "gross_usd", "withheld_usd",
+)  # fmt: skip
+
+
 def _from_row(row: sqlite3.Row) -> dict:
     entry = dict(row)
-    for key in ("inr_amount", "usd_amount", "charges_inr", "tcs_inr", "market_rate", "bank_rate"):
+    for key in DECIMAL_COLUMNS:
         entry[key] = D(entry[key])
     entry["occurred_at"] = datetime.fromisoformat(entry["occurred_at"])
     if entry["market_bar_at"]:
@@ -296,15 +363,3 @@ def _from_row(row: sqlite3.Row) -> dict:
     if entry["bank_rate_date"]:
         entry["bank_rate_date"] = datetime.fromisoformat(entry["bank_rate_date"]).date()
     return entry
-
-
-def _to_db(value):
-    if isinstance(value, Decimal):
-        return f"{value:f}"  # fixed-point, never "1E+3"
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    if isinstance(value, bool):
-        return int(value)
-    return value

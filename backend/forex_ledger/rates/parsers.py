@@ -40,6 +40,22 @@ def parse_yahoo_chart(payload: dict) -> list[Bar]:
     ]
 
 
+def parse_yahoo_price(payload: dict) -> tuple[Decimal, datetime]:
+    """Latest price of a US-listed stock or ETF from Yahoo's chart API."""
+    chart = payload.get("chart") or {}
+    result = chart.get("result") or []
+    if not result:
+        error = (chart.get("error") or {}).get("description") or "Ticker not found"
+        raise LookupError(error)
+    meta = result[0]["meta"]
+    if meta.get("currency") != "USD":
+        raise ValueError(f"{meta.get('symbol')} isn't priced in US dollars")
+    price = meta.get("regularMarketPrice")
+    if not price or price <= 0:
+        raise LookupError("No price available")
+    return q(D(price), 4), datetime.fromtimestamp(meta["regularMarketTime"], IST)
+
+
 def parse_frankfurter(payload: dict) -> tuple[date, Decimal]:
     return date.fromisoformat(payload["date"]), D(payload["rates"]["INR"])
 

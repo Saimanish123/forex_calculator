@@ -4,6 +4,7 @@ import logging
 import shutil
 import sqlite3
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from .config import BACKUPS_TO_KEEP, data_dir
@@ -29,6 +30,17 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 10000")
     return conn
+
+
+def to_db(value):
+    """Python value → SQLite value. Decimals are stored as fixed-point text (never "1E+3")."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, Decimal):
+        return f"{value:f}"
+    if hasattr(value, "isoformat"):  # datetime / date
+        return value.isoformat()
+    return value
 
 
 def migrate(conn: sqlite3.Connection) -> None:
