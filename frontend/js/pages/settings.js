@@ -1,7 +1,8 @@
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "../api.js";
 import { Icon } from "../components/icons.js";
 import { Field, MoneyInput, Select, Spinner, toast } from "../components/ui.js";
+import { formatDate } from "../format.js";
 import { html } from "../html.js";
 import { useMeta } from "../meta.js";
 
@@ -13,13 +14,15 @@ export function SettingsPage() {
     <header class="page-header">
       <div>
         <h1>Settings</h1>
-        <p>Defaults, platform fees, banks and your data.</p>
+        <p>Defaults, platform fees, banks, estimates and your data.</p>
       </div>
     </header>
     <${Defaults} meta=${meta} />
     <${Platforms} meta=${meta} />
     <${Banks} meta=${meta} />
+    <${TaxSection} meta=${meta} />
     <${DataSection} meta=${meta} />
+    <${DangerZone} meta=${meta} />
   </div>`;
 }
 
@@ -225,6 +228,7 @@ function Banks({ meta }) {
 function DataSection({ meta }) {
   const [backupDir, setBackupDir] = useState(meta.settings.backup_dir || "");
   const [busy, setBusy] = useState(false);
+  const [loadingSample, setLoadingSample] = useState(false);
 
   const saveDir = async () => {
     try {
@@ -234,6 +238,17 @@ function DataSection({ meta }) {
     } catch (e) {
       toast(e.message, "error");
     }
+  };
+  const loadSample = async () => {
+    setLoadingSample(true);
+    try {
+      await api.post("/api/sample-data");
+      await meta.reload();
+      toast("Sample data loaded");
+    } catch (e) {
+      toast(e.message, "error");
+    }
+    setLoadingSample(false);
   };
   const backupNow = async () => {
     setBusy(true);
@@ -262,6 +277,230 @@ function DataSection({ meta }) {
         </div>
       </${Field}>
       <div><button class="btn" onClick=${backupNow} disabled=${busy}>${busy ? html`<${Spinner} />` : html`<${Icon} name="check" />`}Back up now</button></div>
+
+      <div class="field">
+        <span class="field-label">Export</span>
+        <div class="data-actions">
+          <a class="btn" href="/api/export" download><${Icon} name="download" />Export everything (JSON)</a>
+          <a class="btn" href="/api/export/conversions.csv" download>Conversions CSV</a>
+          <a class="btn" href="/api/export/trades.csv" download>Trades CSV</a>
+        </div>
+        <span class="field-hint">
+          The JSON file holds everything (entries, trades, platforms, banks and settings) and can be imported on
+          another computer. The CSV files are for spreadsheets.
+        </span>
+      </div>
+
+      <${ImportData} meta=${meta} />
+
+      ${meta.empty &&
+      html`<div class="field">
+        <span class="field-label">Sample data</span>
+        <div class="data-actions">
+          <button class="btn" onClick=${loadSample} disabled=${loadingSample}>
+            ${loadingSample ? html`<${Spinner} />` : html`<${Icon} name="coins" />`}Load sample data
+          </button>
+        </div>
+        <span class="field-hint">A few example conversions, a dividend and trades to try the app. Only available while the ledger is empty.</span>
+      </div>`}
+    </div>
+  </${Section}>`;
+}
+
+function TaxSection({ meta }) {
+  const slab = meta.settings.tax_slab_pct ?? "30";
+  const slabs = ["0", "5", "10", "15", "20", "30"];
+  if (!slabs.includes(slab)) slabs.push(slab); // keep an unusual saved value visible
+  const update = async (body, label) => {
+    try {
+      await api.put("/api/settings", body);
+      await meta.reload();
+      toast(`${label} saved`);
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  };
+  return html`<${Section}
+    title="Tax & estimates"
+    description="Used by the sell calculator and the dashboard's estimates. Estimates only, not tax advice."
+  >
+    <div class="stack" style="max-width:560px">
+      <div class="row">
+        <${Field} label="Tax slab" hint="Used for the short-term capital gains estimate">
+          <${Select}
+            value=${slab}
+            onChange=${(v) => update({ tax_slab_pct: v }, "Tax slab")}
+            options=${slabs.map((v) => ({ value: v, label: `${v}%` }))}
+          />
+        </${Field}>
+      </div>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked=${meta.settings.estimate_conversion_gst === "1"}
+          onChange=${(e) => update({ estimate_conversion_gst: e.target.checked }, "GST estimate setting")}
+        />
+        <span>
+          Estimate GST on currency conversion in projections
+          <span class="field-hint">Adds the GST charged when dollars are converted back to rupees to the sell calculator and dashboard.</span>
+        </span>
+      </label>
+    </div>
+  </${Section}>`;
+}
+
+const TABLE_LABEL = {
+  forex_entries: ["conversion or dividend", "conversions and dividends"],
+  stock_trades: ["trade", "trades"],
+  platforms: ["platform", "platforms"],
+  banks: ["bank", "banks"],
+};
+
+function countText(counts) {
+  return Object.entries(TABLE_LABEL)
+    .filter(([table]) => counts[table] != null)
+    .map(([table, [one, many]]) => `${counts[table]} ${counts[table] === 1 ? one : many}`)
+    .join(", ");
+}
+
+const fileName = (path) => String(path).split(/[\\/]/).pop();
+
+function ImportData({ meta }) {
+  const input = useRef(null);
+  const [pending, setPending] = useState(null); // {name, data}
+  const [error, setError] = useState(null);
+  const [importing, setImporting] = useState(false);
+
+  const choose = async (event) => {
+    const file = event.target.files[0];
+    event.target.value = ""; // choosing the same file again still fires a change
+    if (!file) return;
+    setError(null);
+    setPending(null);
+    try {
+      setPending({ name: file.name, data: JSON.parse(await file.text()) });
+    } catch {
+      setError(`${file.name} isn't a valid JSON file. Choose a file made with "Export everything (JSON)".`);
+    }
+  };
+
+  const confirm = async () => {
+    setImporting(true);
+    setError(null);
+    try {
+      const result = await api.post("/api/import", pending.data);
+      setPending(null);
+      await meta.reload();
+      toast(`Imported ${countText(result.imported)}`);
+    } catch (e) {
+      setError(e.message);
+    }
+    setImporting(false);
+  };
+
+  const tables = pending?.data?.tables;
+  const counts =
+    tables && typeof tables === "object"
+      ? Object.fromEntries(Object.entries(tables).map(([k, rows]) => [k, Array.isArray(rows) ? rows.length : 0]))
+      : null;
+  const exported = pending?.data?.exported_at && !Number.isNaN(Date.parse(pending.data.exported_at)) ? pending.data.exported_at : null;
+
+  return html`<div class="field">
+    <span class="field-label">Import</span>
+    <div class="data-actions">
+      <button class="btn" onClick=${() => input.current.click()} disabled=${importing}>
+        <${Icon} name="upload" />Import from file…
+      </button>
+      <input ref=${input} type="file" accept=".json,application/json" hidden onChange=${choose} />
+    </div>
+    <span class="field-hint">Restore a backup or move your data from another computer using a Forex Ledger JSON export.</span>
+    ${pending &&
+    html`<div class="confirm-panel">
+      <div class="confirm-title">Replace your data with ${pending.name}?</div>
+      ${counts &&
+      html`<div class="cell-sub">
+        The file has ${countText(counts) || "no entries"}${exported ? html`, exported ${formatDate(exported)}` : ""}.
+      </div>`}
+      <p>
+        This replaces all entries, trades, platforms, banks and settings with the file's contents. A backup of your
+        current data is made first.
+      </p>
+      <div class="confirm-actions">
+        <button class="btn" onClick=${() => setPending(null)} disabled=${importing}>Cancel</button>
+        <button class="btn btn-primary" onClick=${confirm} disabled=${importing}>
+          ${importing && html`<${Spinner} />`}Replace my data
+        </button>
+      </div>
+    </div>`}
+    ${error && html`<div class="callout error"><${Icon} name="alert" />${error}</div>`}
+  </div>`;
+}
+
+function DangerZone({ meta }) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState(null);
+  const confirmInput = useRef(null);
+  useEffect(() => void (open && confirmInput.current?.focus()), [open]);
+
+  const cancel = () => {
+    setOpen(false);
+    setTyped("");
+    setError(null);
+  };
+  const remove = async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      const result = await api.post("/api/delete-all", { confirm: "DELETE" });
+      cancel();
+      await meta.reload();
+      toast(`Deleted. Backup saved as ${fileName(result.backup)}`);
+    } catch (e) {
+      setError(e.message);
+    }
+    setDeleting(false);
+  };
+
+  return html`<${Section} title="Danger zone" description="Actions here can't be undone from inside the app.">
+    <div class="danger-card">
+      <div class="list-row danger-row">
+        <div class="grow">
+          <div style="font-weight:500">Delete all entries and trades</div>
+          <div class="cell-sub">
+            Removes every conversion, dividend, stock trade and saved price. Platforms, banks and settings are kept.
+            A backup is made first.
+          </div>
+        </div>
+        ${!open &&
+        html`<button class="btn btn-danger" onClick=${() => setOpen(true)} disabled=${meta.empty}>
+          <${Icon} name="trash" size=${14} />Delete all…
+        </button>`}
+      </div>
+      ${open &&
+      html`<div class="danger-confirm">
+        <${Field} label="Type DELETE to confirm">
+          <input
+            ref=${confirmInput}
+            class="input mono"
+            value=${typed}
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="DELETE"
+            onInput=${(e) => setTyped(e.target.value)}
+            onKeyDown=${(e) => (e.key === "Escape" ? cancel() : e.key === "Enter" && typed === "DELETE" && !deleting && remove())}
+          />
+        </${Field}>
+        <div class="confirm-actions">
+          <button class="btn" onClick=${cancel} disabled=${deleting}>Cancel</button>
+          <button class="btn btn-danger-solid" onClick=${remove} disabled=${typed !== "DELETE" || deleting}>
+            ${deleting ? html`<${Spinner} />` : html`<${Icon} name="trash" size=${14} />`}Delete everything
+          </button>
+        </div>
+        ${error && html`<div class="callout error"><${Icon} name="alert" />${error}</div>`}
+      </div>`}
+      ${meta.empty && !open && html`<div class="cell-sub" style="margin-top:8px">There are no entries or trades to delete.</div>`}
     </div>
   </${Section}>`;
 }

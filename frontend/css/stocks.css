@@ -1,0 +1,69 @@
+/* stocks page styles — built on the tokens and components in app.css */
+
+.stock-first-title { margin-top: 0; }
+.stock-platform-title { margin: 0 0 8px; font-size: 13.5px; font-weight: 600; color: var(--text-muted); }
+.stock-th-sub { font-size: 11.5px; font-weight: 400; color: var(--text-subtle); }
+.stock-filter-select { width: 200px; }
+.stock-symbol { font-weight: 500; }
+.stock-note { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.cell-sub.pos { color: var(--pos); }
+.cell-sub.neg { color: var(--neg); }
+
+/* holdings */
+.stock-holdings th:last-child, .stock-holdings td:last-child { width: 1%; }
+.stock-ticker {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none;
+  font-weight: 600; cursor: pointer; border-radius: 4px;
+}
+.stock-ticker svg { color: var(--text-muted); transform: rotate(-90deg); transition: transform 0.15s; }
+.stock-ticker.open svg { transform: none; }
+.stock-ticker:hover svg { color: var(--text); }
+.stock-ticker:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
+.stock-indent { padding-left: 20px; }
+.stock-row-open td { border-bottom-color: transparent; }
+
+.stock-lots-row > td { padding-top: 0; background: var(--bg); }
+.stock-lots { margin-left: 20px; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-x: auto; }
+.stock-lots-title { padding: 8px 12px; font-size: 12.5px; font-weight: 500; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.stock-lots th { padding: 6px 12px; font-size: 12px; }
+.stock-lots th:first-child, .stock-lots th:last-child { border-radius: 0; }
+.stock-lots td { padding: 7px 12px; font-size: 13px; }
+
+.stock-price { display: inline-flex; flex-direction: column; align-items: flex-end; }
+.stock-price-line { display: inline-flex; align-items: center; gap: 2px; margin-right: -6px; }
+.stock-price-value {
+  padding: 0; border: 0; background: none; cursor: text; font-variant-numeric: tabular-nums;
+  text-decoration: underline dashed var(--border-strong); text-underline-offset: 4px; border-radius: 4px;
+}
+.stock-price-value:hover { text-decoration-color: currentColor; }
+.stock-price-value:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
+.stock-fetch.btn-icon { width: 24px; height: 24px; color: var(--text-muted); }
+.stock-fetch.btn-icon:hover { color: var(--text); }
+.stock-price-edit { width: 128px; margin-left: auto; }
+.stock-price-edit .input { height: 30px; text-align: right; }
+
+.stock-cash {
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px; font-size: 13px;
+  border-top: 1px solid var(--border); background: var(--bg-subtle);
+  border-radius: 0 0 var(--radius) var(--radius); font-variant-numeric: tabular-nums;
+}
+.stock-cash svg { color: var(--text-muted); flex-shrink: 0; }
+.stock-cash strong { font-weight: 600; }
+.stock-no-shares { padding: 14px 16px; color: var(--text-muted); }
+
+/* trade drawer */
+.stock-ticker-input { text-transform: uppercase; font-variant-numeric: tabular-nums; }
+.stock-ticker-input::placeholder { text-transform: none; }
+.stock-fee-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.stock-fee-hint { margin: 8px 0 0; }
+.stock-fee-hint .link { font-size: inherit; color: var(--text); }
+.stock-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+.stock-check input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.stock-check .field-hint { display: block; font-weight: 400; margin-top: 2px; }
+.stock-check + .field .input:disabled { background: var(--bg-muted); color: var(--text-muted); cursor: not-allowed; }
+
+@media (max-width: 760px) {
+  .stock-fee-grid { grid-template-columns: 1fr; }
+  .stock-filter-select { width: 100%; }
+  .stock-cash { align-items: flex-start; }
+}

@@ -103,10 +103,6 @@ a { color: inherit; }
 }
 .nav a:hover { background: var(--bg-hover); color: var(--text); }
 .nav a.active { background: var(--bg-muted); color: var(--text); }
-.nav-section { margin: 20px 8px 6px; font-size: 12px; color: var(--text-subtle); font-weight: 500; }
-.nav .soon { color: var(--text-subtle); cursor: default; }
-.nav .soon:hover { background: none; color: var(--text-subtle); }
-.nav .soon .tag { margin-left: auto; }
 .sidebar-foot { margin-top: auto; padding: 0 8px; font-size: 12px; color: var(--text-subtle); line-height: 1.6; }
 
 .main { flex: 1; min-width: 0; }
@@ -271,7 +267,7 @@ tbody tr.clickable:hover td { background: var(--bg-subtle); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- settings ---------- */
-.settings-section { display: grid; grid-template-columns: 280px 1fr; gap: 32px; padding: 28px 0; border-top: 1px solid var(--border); }
+.settings-section { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 32px; padding: 28px 0; border-top: 1px solid var(--border); }
 .settings-section:first-of-type { border-top: 0; padding-top: 4px; }
 .settings-section h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 .settings-section > div > p { margin: 4px 0 0; color: var(--text-muted); font-size: 13.5px; }
@@ -295,7 +291,7 @@ tbody tr.clickable:hover td { background: var(--bg-subtle); }
 /* ---------- responsive ---------- */
 @media (max-width: 1080px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .settings-section { grid-template-columns: 1fr; gap: 16px; }
+  .settings-section { grid-template-columns: minmax(0, 1fr); gap: 16px; }
 }
 @media (max-width: 760px) {
   .app { flex-direction: column; }
@@ -303,7 +299,7 @@ tbody tr.clickable:hover td { background: var(--bg-subtle); }
   .brand { padding: 0 12px 0 0; }
   .brand span { display: none; }
   .nav { flex-direction: row; overflow-x: auto; }
-  .nav-section, .nav .soon, .sidebar-foot { display: none; }
+  .sidebar-foot { display: none; }
   .page { padding: 24px 16px 48px; }
   .page-header { flex-direction: column; }
   .kbd { display: none; }

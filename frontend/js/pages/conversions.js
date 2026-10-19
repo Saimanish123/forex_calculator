@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import { api } from "../api.js";
 import { Icon } from "../components/icons.js";
-import { EmptyState, Segmented, Select, Stat } from "../components/ui.js";
+import { EmptyState, Segmented, Select, Spinner, Stat, toast } from "../components/ui.js";
 import { formatDate, formatTime, inr, isNegative, isZero, pct, rate, signedInr, usd } from "../format.js";
 import { html } from "../html.js";
 import { bankName, platformName, useMeta } from "../meta.js";
@@ -16,6 +16,7 @@ export function ConversionsPage() {
   const [direction, setDirection] = useState("all");
   const [platform, setPlatform] = useState("all");
   const [editing, setEditing] = useState(null); // null | "new" | entry
+  const [loadingSample, setLoadingSample] = useState(false);
 
   const load = useCallback(
     () =>
@@ -44,15 +45,28 @@ export function ConversionsPage() {
     (e) => (direction === "all" || e.kind === direction) && (platform === "all" || e.platform_id === platform),
   );
   const close = useCallback(() => setEditing(null), []);
+  const dividendView = direction === "dividend";
+
+  const loadSample = async () => {
+    setLoadingSample(true);
+    try {
+      await api.post("/api/sample-data");
+      await Promise.all([meta.reload(), load()]);
+      toast("Sample data loaded");
+    } catch (e) {
+      toast(e.message, "error");
+    }
+    setLoadingSample(false);
+  };
 
   return html`<div class="page">
     <header class="page-header">
       <div>
         <h1>Conversions</h1>
-        <p>Every INR ↔ USD transfer, measured against the market rate at that minute.</p>
+        <p>Every INR ↔ USD transfer, measured against the market rate at that minute, and every dividend received.</p>
       </div>
       <button class="btn btn-primary" onClick=${() => setEditing("new")}>
-        <${Icon} name="plus" />New conversion<span class="kbd">N</span>
+        <${Icon} name="plus" />${dividendView ? "New dividend" : "New conversion"}<span class="kbd">N</span>
       </button>
     </header>
 
@@ -66,11 +80,17 @@ export function ConversionsPage() {
           <${EmptyState}
             icon="arrows"
             title="No conversions yet"
-            action=${html`<button class="btn btn-primary" onClick=${() => setEditing("new")}>
-              <${Icon} name="plus" />Add your first conversion
-            </button>`}
+            action=${html`<div class="empty-actions">
+              <button class="btn btn-primary" onClick=${() => setEditing("new")}>
+                <${Icon} name="plus" />Add your first conversion
+              </button>
+              ${meta.empty &&
+              html`<button class="btn" onClick=${loadSample} disabled=${loadingSample}>
+                ${loadingSample ? html`<${Spinner} />` : html`<${Icon} name="download" />`}Load sample data
+              </button>`}
+            </div>`}
           >
-            Add a deposit or withdrawal from your ${platformName(meta, meta.settings.default_platform)} history.
+            Add a deposit, withdrawal or dividend from your ${platformName(meta, meta.settings.default_platform)} history.
             The app looks up the market rate at that minute and shows what the conversion really cost you.
           </${EmptyState}>
         </div>`
@@ -83,6 +103,7 @@ export function ConversionsPage() {
                 { value: "all", label: "All" },
                 { value: "deposit", label: "INR → USD" },
                 { value: "withdrawal", label: "USD → INR" },
+                { value: "dividend", label: "Dividends" },
               ]}
             />
             ${usedPlatforms.length > 1 &&
@@ -101,13 +122,14 @@ export function ConversionsPage() {
           <div class="card table-wrap">
             <${EntriesTable} entries=${visible} meta=${meta} onOpen=${setEditing} />
             ${visible.length === 0 &&
-            html`<div class="empty" style="padding:32px"><p style="margin:0">No conversions match these filters.</p></div>`}
+            html`<div class="empty" style="padding:32px"><p style="margin:0">${dividendView ? "No dividends match these filters." : "No entries match these filters."}</p></div>`}
           </div>
         `)}
 
     ${editing &&
     html`<${ConversionDrawer}
       entry=${editing === "new" ? null : editing}
+      initialKind=${dividendView ? "dividend" : undefined}
       onClose=${close}
       onSaved=${() => (close(), load())}
     />`}
@@ -167,6 +189,7 @@ function EntriesTable({ entries, meta, onOpen }) {
     </thead>
     <tbody>
       ${entries.map((e) => {
+        if (e.kind === "dividend") return html`<${DividendRow} key=${e.id} entry=${e} meta=${meta} onOpen=${onOpen} />`;
         const a = e.analysis;
         const deposit = e.kind === "deposit";
         return html`<tr
@@ -204,6 +227,27 @@ function EntriesTable({ entries, meta, onOpen }) {
       })}
     </tbody>
   </table>`;
+}
+
+function DividendRow({ entry: e, meta, onOpen }) {
+  const none = html`<span class="subtle">—</span>`;
+  return html`<tr class="clickable" tabindex="0" onClick=${() => onOpen(e)} onKeyDown=${(ev) => ev.key === "Enter" && onOpen(e)}>
+    <td class="nowrap">${formatDate(e.occurred_at)}<div class="cell-sub">${formatTime(e.occurred_at)} IST</div></td>
+    <td><span class="badge">Dividend</span></td>
+    <td>${platformName(meta, e.platform_id)}</td>
+    <td class="r nowrap">
+      ${usd(e.usd_amount)}
+      <div class="cell-sub">${e.ticker} · ${usd(e.gross_usd)} before ${usd(e.withheld_usd)} US tax</div>
+      <div class="cell-sub">${inr(e.income_inr)} income</div>
+    </td>
+    <td class="r">${none}</td>
+    <td class="r">
+      ${rate(e.market.rate)}
+      <div class="cell-sub">${marketTag(e.market)}</div>
+    </td>
+    <td class="r">${none}</td>
+    <td class="r">${none}</td>
+  </tr>`;
 }
 
 function marketTag(market) {
