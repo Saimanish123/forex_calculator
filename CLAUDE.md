@@ -5,27 +5,36 @@
 A local web app for Indian residents investing in US stocks (INDmoney by default). Users record
 INR↔USD conversions and stock trades; the app shows hidden forex markup, GST, brokerage, currency
 effect and true ₹ profit, plus a sell calculator. **[SPEC.md](SPEC.md) is the source of truth** for
-features, formulas (§6) and build phases (§8). Update it when a decision changes.
+features, formulas (§6), measured data-source limits (§5) and build phases (§8). Update it when a
+decision changes.
 
-## Stack and commands
+## Layout
 
-Python 3.11+, FastAPI, SQLite, plain HTML/JS frontend (no Node build step). Managed with `uv`.
+- `backend/forex_ledger/` — FastAPI app, SQLite (`migrations/*.sql`, applied by `PRAGMA user_version`)
+  - `calc/` pure money math · `rates/` one parser per external source + caching `RateService`
+  - `forex.py` forex ledger · `app.py` API + static frontend · `cli.py` the `forex` command
+- `backend/tests/` — pytest; `fixtures/` are trimmed real rate sheets; network is always faked
+- `frontend/` — no build step: Preact + htm vendored in `vendor/`, ES modules in `js/`, one CSS file
+
+## Commands
 
 ```bash
-uv sync                 # install deps
-uv run pytest           # tests
+uv run forex            # run the app (data in ./data, override with FOREX_LEDGER_DATA_DIR)
+uv run pytest           # tests (includes property-based tests via hypothesis)
 uv run ruff check .     # lint
 uv run ruff format .    # format
 ```
 
 ## Conventions
 
-- Money and rates use `Decimal`, never float. Rates are always ₹ per $ (e.g. 94.96).
-- Store only what the user entered plus the rates fetched for each entry. Everything derived
-  (markups, dollar pools, FIFO lots, P&L) is recomputed from the ledger, so back-dated entries
-  just work.
-- Keep calculation logic pure (no DB/HTTP) so it's easy to test. The worked examples in SPEC.md §6
-  are test cases and must keep passing.
-- External rate sources are cached locally. Fetch each date once; ICICI's page at most once a day.
-- The repo is public. Never commit personal data, database files or real ledger entries
-  (use the sample-data mode for demos).
+- Money and rates are `Decimal`, never float — in Python, in SQLite (TEXT) and in JSON (strings via
+  `money.fmt`; FastAPI would turn Decimals into floats). The frontend never does money math.
+- Amounts have ≤ 2 decimals, rates ≤ 4 (rejected otherwise). Fetched rates are stored at 4 decimals
+  so the rate shown is the rate used. Per-conversion ₹ figures are rounded to the paisa once
+  (`forex.paise`) and totals are sums of those, so totals always equal the rows.
+- Store only user input plus the rates fetched for each entry; everything else is derived, so
+  back-dated entries just work.
+- External sources: one parser per source (a layout change breaks only that source), cached
+  locally, short timeouts on request paths, failures retried after 10 minutes.
+- Every claim about data sources in SPEC.md/UI copy is backed by a measurement; keep it that way.
+- The repo is public: never commit personal data, databases, screenshots or scratch files.
