@@ -11,10 +11,15 @@ decision changes.
 ## Layout
 
 - `backend/forex_ledger/` — FastAPI app, SQLite (`migrations/*.sql`, applied by `PRAGMA user_version`)
-  - `calc/` pure money math · `rates/` one parser per external source + caching `RateService`
-  - `forex.py` forex ledger · `app.py` API + static frontend · `cli.py` the `forex` command
+  - `calc/` pure money math: `conversions` (markups), `portfolio` (ledger replay: dollar pools,
+    FIFO lots, realized results), `scenario` (sell / sell-everything / break-even), `tax`, `fees`, `gst`
+  - `rates/` one parser per external source + caching `RateService`
+  - `forex.py` / `stocks.py` ledgers (stocks replays the ledger in-transaction to reject impossible
+    edits) · `ledger.py` DB rows → engine events · `insights.py` holdings, calculator, dashboard,
+    TCS · `transfer.py` export/import/sample data · `app.py` API + static frontend · `cli.py`
 - `backend/tests/` — pytest; `fixtures/` are trimmed real rate sheets; network is always faked
-- `frontend/` — no build step: Preact + htm vendored in `vendor/`, ES modules in `js/`, one CSS file
+- `frontend/` — no build step: Preact + htm vendored in `vendor/`, ES modules in `js/pages/`,
+  shared tokens/components in `css/app.css` + `js/components/ui.js`, page CSS in `css/*.css`
 
 ## Commands
 
@@ -32,8 +37,9 @@ uv run ruff format .    # format
 - Amounts have ≤ 2 decimals, rates ≤ 4 (rejected otherwise). Fetched rates are stored at 4 decimals
   so the rate shown is the rate used. Per-conversion ₹ figures are rounded to the paisa once
   (`forex.paise`) and totals are sums of those, so totals always equal the rows.
-- Store only user input plus the rates fetched for each entry; everything else is derived, so
-  back-dated entries just work.
+- Store only user input plus the rates fetched for each entry or trade; everything else is
+  derived by replaying the ledger, so back-dated entries just work. Engine invariants (realized +
+  "if sold today" = out − in) are property-tested in `test_properties.py` — keep them passing.
 - External sources: one parser per source (a layout change breaks only that source), cached
   locally, short timeouts on request paths, failures retried after 10 minutes.
 - Every claim about data sources in SPEC.md/UI copy is backed by a measurement; keep it that way.
