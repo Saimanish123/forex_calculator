@@ -181,7 +181,7 @@ def ledgers(draw):
         platform = draw(st.sampled_from(["a", "b"]))
         rate = draw(fx)
         op = draw(st.sampled_from(["deposit", "deposit", "buy", "buy", "sell", "split",
-                                   "dividend", "withdrawal"]))  # fmt: skip
+                                   "dividend", "withdrawal", "bonus", "writeoff"]))  # fmt: skip
         if op == "deposit":
             usd = draw(money)
             cost = (usd * rate * draw(st.decimals(Decimal("1.000"), Decimal("1.030"), places=3))
@@ -225,6 +225,19 @@ def ledgers(draw):
             events.append(Event("split", t, n, platform, ticker=ticker, split_from=ratio_from,
                                 split_to=ratio_to))  # fmt: skip
             held[(p, ticker)] = held[(p, ticker)] * ratio_to / ratio_from
+        elif op in ("bonus", "writeoff"):
+            owned = [k for k, q in held.items() if k[0] == platform and q > 0]
+            if not owned:
+                continue
+            p, ticker = draw(st.sampled_from(owned))
+            qty = (held[(p, ticker)] * draw(st.decimals(Decimal("0.1"), Decimal("1"), places=2))
+                   ).quantize(Decimal("0.00000001"), rounding="ROUND_DOWN")  # fmt: skip
+            if qty <= 0:
+                continue
+            signed = qty if op == "bonus" else -qty
+            events.append(Event("adjustment", t, n, platform, rate, ticker=ticker,
+                                quantity=signed))  # fmt: skip
+            held[(p, ticker)] += signed
         elif op == "dividend":
             usd = draw(st.decimals(Decimal("0.01"), Decimal("50.00"), places=2))
             events.append(Event("dividend", t, n, platform, rate, usd=usd, ticker="AAA",

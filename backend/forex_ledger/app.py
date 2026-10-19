@@ -272,6 +272,15 @@ def create_app(sources=None, warm_up: bool = True) -> FastAPI:
             "total_usd": fmt(fees.total),
         }
 
+    @app.post("/api/stock-trades/preview")
+    def preview_trade(
+        body: TradeIn,
+        trade_id: int | None = None,
+        conn: sqlite3.Connection = Depends(get_conn),
+        rates: RateService = Depends(get_rates),
+    ):
+        return stocks.preview(conn, rates, stocks.TradeInput(**body.model_dump()), trade_id)
+
     @app.post("/api/stock-trades", status_code=201)
     def create_trade(
         body: TradeIn,

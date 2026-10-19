@@ -197,10 +197,12 @@ def test_bonus_shares_and_write_offs():
     ])  # fmt: skip
     write_off = ledger.sales[0]
     assert write_off.gross == 0 and write_off.cost_usd == 1000
-    assert write_off.gain_inr == Dec(-91000)
-    # The rupee cost that isn't the loss at today's rate (entry markup + currency) stays pooled.
+    assert write_off.stock_gain_inr == Dec(-91000)  # $1,000 lost, at today's 91
+    assert write_off.currency_inr == Dec(2000)  # 89 → 91 on those $1,000
+    assert write_off.entry_cost_inr == Dec(1000)  # ₹90,000 paid vs ₹89,000 at mid
+    assert write_off.gain_inr == Dec(-90000)  # exactly the rupees paid
     pool = ledger.platforms["p"].pool
-    assert (pool.usd, pool.inr) == (0, Dec(90000) - Dec(91000))
+    assert (pool.usd, pool.inr, pool.mkt) == (0, 0, 0)  # nothing orphaned
 
 
 def test_impossible_ledgers_are_rejected():

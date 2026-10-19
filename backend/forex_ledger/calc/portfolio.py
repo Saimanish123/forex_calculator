@@ -180,9 +180,32 @@ class Sale:
         return self.proceeds - self.cost_usd
 
     @property
-    def gain_inr(self) -> Decimal:
-        """Realized in rupees at the sale's market rate (it joins the dollar pool at that rate)."""
+    def write_off(self) -> bool:
+        """Shares removed with no proceeds: nothing goes back to the dollar pool."""
+        return self.event.kind == "adjustment"
+
+    @property
+    def stock_gain_inr(self) -> Decimal:
+        """The $ gain/loss at the sale's market rate."""
         return self.gain_usd * self.event.market_rate
+
+    @property
+    def currency_inr(self) -> Decimal:
+        """A sale's proceeds carry its currency movement and entry costs back into the pool (they
+        are realized when those dollars are withdrawn). A write-off has no proceeds to carry
+        them, so it realizes them now."""
+        if not self.write_off:
+            return ZERO
+        return self.cost_usd * self.event.market_rate - self.mkt_cost
+
+    @property
+    def entry_cost_inr(self) -> Decimal:
+        return self.inr_cost - self.mkt_cost if self.write_off else ZERO
+
+    @property
+    def gain_inr(self) -> Decimal:
+        """Everything this trade realized in rupees (a write-off: minus its full rupee cost)."""
+        return self.stock_gain_inr + self.currency_inr - self.entry_cost_inr
 
 
 @dataclass(frozen=True)
@@ -275,9 +298,10 @@ def _buy(ledger: Ledger, state: PlatformState, e: Event) -> None:
 def _consume(state: PlatformState, e: Event, ticker: str, qty: Decimal) -> tuple[Lot, ...]:
     held = state.held(ticker)
     if qty > held:
+        verb = "sold" if e.kind == "sell" else "written off"
         raise LedgerError(
             f"Only {_qty(held)} shares of {ticker} were held on {e.at:%d %b %Y}, "
-            f"so {_qty(qty)} can't be removed",
+            f"so {_qty(qty)} can't be {verb}",
             e,
         )
     lots, slices, remaining = state.lots[ticker], [], qty
@@ -293,7 +317,9 @@ def _consume(state: PlatformState, e: Event, ticker: str, qty: Decimal) -> tuple
 def _sell(ledger: Ledger, state: PlatformState, e: Event) -> None:
     slices = _consume(state, e, e.ticker, e.quantity)
     sale = Sale(e, e.quantity * e.price, e.fees, slices)
-    gain_inr = sale.gain_inr
+    # Proceeds join the pool with the lots' rupee cost plus the gain valued today, so the
+    # position's currency movement and entry costs travel on with those dollars.
+    gain_inr = sale.stock_gain_inr
     state.pool.add(sale.proceeds, sale.inr_cost + gain_inr, sale.mkt_cost + gain_inr)
     ledger.sales.append(sale)
 
@@ -314,13 +340,9 @@ def _adjustment(ledger: Ledger, state: PlatformState, e: Event) -> None:
         lot = Lot(e.id, e.ticker, e.at, e.quantity, ZERO, ZERO, ZERO, ZERO)
         state.lots.setdefault(e.ticker, []).append(lot)
     elif e.quantity < 0:  # shares written off with no proceeds (e.g. delisting)
-        # Same as a sale at $0: the loss is realized at today's rate and the rest of the rupee
-        # cost (entry costs and currency) stays in the pool, exactly like after a normal sale.
+        # Fully realized now (no dollars come back to carry any of it): −(the lots' rupee cost).
         slices = _consume(state, e, e.ticker, -e.quantity)
-        sale = Sale(e, ZERO, ZERO, slices)
-        gain_inr = sale.gain_inr
-        state.pool.add(ZERO, sale.inr_cost + gain_inr, sale.mkt_cost + gain_inr)
-        ledger.sales.append(sale)
+        ledger.sales.append(Sale(e, ZERO, ZERO, slices))
 
 
 def _transfer(state: PlatformState, e: Event) -> None:

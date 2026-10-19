@@ -283,3 +283,45 @@ def test_future_trades_and_bad_dividend_tickers_are_rejected(funded):
         },
     )
     assert bad.status_code == 400
+
+
+def test_blank_dividend_ticker_rejected(client):
+    r = client.post(
+        "/api/forex-entries",
+        json={
+            "kind": "dividend",
+            "occurred_at": ts(1),
+            "platform_id": "indmoney",
+            "ticker": "   ",
+            "gross_usd": "1.00",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_back_to_back_backups_never_overwrite(client, tmp_path):
+    client.post("/api/sample-data")
+    first = client.post("/api/backup").json()["path"]
+    second = client.post("/api/delete-all", json={"confirm": "DELETE"}).json()["backup"]
+    assert first != second
+    assert len(list((tmp_path / "backups").glob("forex-*.db"))) == 2
+
+
+def test_trade_preview_never_saves(funded):
+    before = funded.get("/api/stock-trades").json()
+    body = {"kind": "sell", "occurred_at": ts(10), "platform_id": "indmoney", "ticker": "ABC",
+            "quantity": "4", "price_usd": "60", "brokerage_usd": "0.60",
+            "brokerage_gst_usd": "0.11"}  # fmt: skip
+    p = funded.post("/api/stock-trades/preview", json=body).json()
+    assert (p["id"], p["gross_usd"], p["fees_usd"], p["total_usd"]) == (None, "240.00", "0.71",
+                                                                         "239.29")  # fmt: skip
+    assert p["realized"]["gain_usd"] == f"{Decimal('239.29') - Decimal('501.48') * 4 / 10:.2f}"
+    too_many = funded.post("/api/stock-trades/preview", json=body | {"quantity": "11"})
+    assert too_many.status_code == 400 and "Only 10 shares" in too_many.json()["detail"]
+
+    buy_id = before["trades"][0]["id"]
+    edit = {"kind": "buy", "occurred_at": ts(20), "platform_id": "indmoney", "ticker": "ABC",
+            "quantity": "12", "price_usd": "50"}  # fmt: skip
+    p = funded.post(f"/api/stock-trades/preview?trade_id={buy_id}", json=edit).json()
+    assert (p["id"], p["total_usd"]) == (buy_id, "600.00")
+    assert funded.get("/api/stock-trades").json() == before  # nothing saved

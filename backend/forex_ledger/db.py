@@ -59,7 +59,7 @@ def backup(conn: sqlite3.Connection, extra_dir: str | None = None) -> Path:
     """Copy the database to data/backups (keeping the newest N), plus an optional extra folder."""
     backups = data_dir() / "backups"
     backups.mkdir(parents=True, exist_ok=True)
-    target = backups / f"forex-{datetime.now():%Y%m%d-%H%M%S}.db"
+    target = backups / f"forex-{datetime.now():%Y%m%d-%H%M%S-%f}.db"  # µs: never collides
     with sqlite3.connect(target) as dest:
         conn.backup(dest)
     dest.close()

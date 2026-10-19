@@ -344,12 +344,17 @@ def dashboard(conn: sqlite3.Connection, rates: RateService) -> dict:
         }
         for w in built.withdrawals
     ]
-    stock_realized = sum((v for _, v in sales), ZERO)
+    stock_realized = sum((q(s.stock_gain_inr) for s, _ in sales), ZERO)
     dividend_income = sum((v for _, v in dividends), ZERO)
-    currency = sum((w["currency"] for w in withdrawals), ZERO)
-    entry_costs = sum((w["entry"] for w in withdrawals), ZERO)
+    # Write-offs realize their currency movement and entry costs immediately (see Sale).
+    currency = sum((w["currency"] for w in withdrawals), ZERO) + sum(
+        (q(s.currency_inr) for s, _ in sales), ZERO
+    )
+    entry_costs = sum((w["entry"] for w in withdrawals), ZERO) + sum(
+        (q(s.entry_cost_inr) for s, _ in sales), ZERO
+    )
     exit_costs = sum((w["exit"] for w in withdrawals), ZERO)
-    withdrawal_net = currency - entry_costs - exit_costs
+    currency_net = currency - entry_costs - exit_costs
     withheld_inr = sum((q(d.event.withheld_usd * d.event.market_rate) for d, _ in dividends), ZERO)
 
     brokerage = ZERO
@@ -382,8 +387,7 @@ def dashboard(conn: sqlite3.Connection, rates: RateService) -> dict:
             "currency_inr": fmt(currency),
             "entry_costs_inr": fmt(entry_costs),
             "exit_costs_inr": fmt(exit_costs),
-            "withdrawals_net_inr": fmt(withdrawal_net),
-            "total_inr": fmt(stock_realized + dividend_income + withdrawal_net),
+            "total_inr": fmt(stock_realized + dividend_income + currency_net),
             "sales": len(sales),
             "withdrawals": len(withdrawals),
             "dividends": len(dividends),
@@ -424,7 +428,9 @@ def _position(conn, platform_id: str, state: PlatformState, known, benchmark, wi
         "cash_usd": fmt(state.pool.usd),
         "exit": None,
         "break_even_usd": None,
+        "gap_usd": None,
         "exit_markup_pct": None,
+        "exit_markup_source": None,
     }
     if missing or benchmark is None:
         return position

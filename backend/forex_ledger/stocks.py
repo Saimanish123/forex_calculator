@@ -151,6 +151,49 @@ def delete(conn: sqlite3.Connection, trade_id: int) -> None:
         _check(conn)
 
 
+class _Rollback(Exception):
+    def __init__(self, result: dict):
+        self.result = result
+
+
+def preview(
+    conn: sqlite3.Connection, rates: RateService, data: TradeInput, trade_id: int | None = None
+) -> dict:
+    """What saving would produce (exact totals, realized gain, or the reason it's impossible),
+    computed by applying the change and replaying the ledger in a transaction that is always
+    rolled back."""
+    if trade_id is not None:
+        _load(conn, trade_id)
+    validate(data)
+    fields = _fields(rates, data)
+    now = datetime.now(IST).isoformat()
+    try:
+        with conn:
+            if trade_id is None:
+                columns = list(fields) + ["created_at", "updated_at"]
+                trade_id = conn.execute(
+                    f"INSERT INTO stock_trades ({', '.join(columns)}) "
+                    f"VALUES ({', '.join('?' * len(columns))})",
+                    [to_db(fields[c]) for c in fields] + [now, now],
+                ).lastrowid
+                new = True
+            else:
+                conn.execute(
+                    f"UPDATE stock_trades SET {', '.join(f'{c} = ?' for c in fields)} WHERE id = ?",
+                    [to_db(v) for v in fields.values()] + [trade_id],
+                )
+                new = False
+            try:
+                built = ledger.build(conn)
+            except LedgerError as exc:
+                raise ValueError(str(exc)) from exc
+            sales = {s.event.id: s for s in built.sales}
+            result = serialize(_load(conn, trade_id), sales.get(trade_id))
+            raise _Rollback(result | {"id": None if new else trade_id})
+    except _Rollback as done:
+        return done.result
+
+
 def get(conn: sqlite3.Connection, trade_id: int) -> dict:
     row = _load(conn, trade_id)
     sales = {s.event.id: s for s in ledger.build(conn).sales}
@@ -210,7 +253,11 @@ def sale_json(sale: Sale) -> dict:
         "proceeds_usd": fmt(sale.proceeds),
         "cost_usd": fmt(sale.cost_usd),
         "gain_usd": fmt(sale.gain_usd),
-        "gain_inr": fmt(sale.gain_inr),
+        "gain_inr": fmt(sale.gain_inr),  # everything realized by this trade
+        "stock_gain_inr": fmt(sale.stock_gain_inr),
+        "currency_inr": fmt(sale.currency_inr),
+        "entry_cost_inr": fmt(sale.entry_cost_inr),
+        "write_off": sale.write_off,
         "inr_cost": fmt(sale.inr_cost),
         "lots": len(sale.slices),
         "first_acquired": min(s.acquired_at for s in sale.slices).isoformat(),
