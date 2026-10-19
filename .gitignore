@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+.hypothesis/
 .ruff_cache/
 
 # Personal data — never commit
@@ -20,3 +21,6 @@ CLAUDE.local.md
 
 # macOS
 .DS_Store
+
+# Browser automation artifacts
+.playwright-mcp/

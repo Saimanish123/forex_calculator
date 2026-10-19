@@ -5,7 +5,7 @@ platforms supported). It records every INR↔USD conversion and every stock trad
 shows the **hidden costs** (forex markup, GST, brokerage), the **currency effect**, and
 the **true rupee profit** of any holding — including a "what if I sell now" calculator.
 
-Status: **idea finalized, not built yet.**
+Status: **phase 1 (forex core) built; phases 2–3 next.**
 
 ---
 
@@ -124,10 +124,20 @@ Current price per ticker, entered by you, used by the dashboard's "if I sold eve
 | HDFC / any other bank | typed in | — | HDFC's daily PDF URL isn't stable; manual entry |
 
 Every forex entry has a **date and time (IST)** — the moment the rate was locked (INDmoney's
-confirm time). A "Converted just now" button fills the current time. The benchmark is the 1-minute
-bar at that timestamp when available, else the finest available bar; the entry stores which
-granularity was used. Conversions while the market is closed (weekends/holidays) are flagged and
-compared against the last close.
+confirm time). A "Now" button fills the current time. The benchmark is the 1-minute bar
+containing that timestamp when available, else the finest available bar; the entry stores which
+granularity was used. The finest bar already cached always wins, so editing an old entry never
+downgrades its precision. Only finished bars are cached.
+
+**Measured coverage (12–16 Oct 2026):** Yahoo's `INR=X` 1-minute data is dense from 09:00 to
+15:30 IST on weekdays, with only 6–20 scattered quotes outside those hours per day, and nothing
+at weekends. A conversion more than 30 minutes (or two bars) after the last quote is flagged
+"stale" and compared with that last quote; the UI shows the quote's time.
+
+**Bank rate sources (measured):** SBI's CSV on raw GitHub took 30–75 s per request from India,
+while the jsDelivr mirror took ~1.3 s (but may lag by up to 12 h). Requests use the mirror; the
+background warm-up at startup also tries raw GitHub. Live calls time out after 6 s, and failed
+fetches are retried after 10 minutes.
 
 All fetched rates are cached locally, so each date is fetched once. Past entries get mid-market
 and SBI comparisons automatically; ICICI comparison only exists from the day the app started
@@ -215,8 +225,10 @@ Every figure in the UI is labelled **exact** or **≈ estimate**:
 - **≈ Close**: markup vs mid-market. With a 1-minute benchmark (entries within 30 days) the error
   is a few paise (~₹10–50 per ₹1L) — as exact as a market rate can be, since providers differ by a
   few paise at any instant. Coarser bars for older entries widen this (1-hour ~₹50–150, daily
-  ~₹100–300 per ₹1L); the entry shows its benchmark granularity. Bank comparisons (published
-  card rates may differ from the user's actual bank rate), and the split of P&L into stock /
+  ~₹100–300 per ₹1L); the entry shows its benchmark granularity. Conversions outside ~09:00–15:30
+  IST are compared with the last available quote (flagged with its time). Bank comparisons
+  compare exchange rates only (a direct bank transfer would also add GST and a wire fee), and
+  published card rates may differ from the user's actual bank rate. The split of P&L into stock /
   currency / costs (total exact; split depends on average-cost + FIFO convention).
 - **≈ Estimate**: sell calculator, break-even, "if sold today" (expected exit markup, future
   settlement rate, GST slab) and the tax estimate.
